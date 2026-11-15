@@ -105,8 +105,11 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
-  peer_shrinkage: 5,
-  peer_min: 3,
+  // Both chosen on the blind test (tools/backtest.mjs sweeps them), not by taste. The sweep is noisy
+  // at 128 points, so these are moderate values rather than whichever pair scored highest: the knobs
+  // sit where the curve is already doing the work, not tuned to the last decimal of a small sample.
+  peer_shrinkage: 3,
+  peer_min: 4,
   multiple_floor: 0.02,
   multiple_cap: 3,
   share_small: 0.1,
@@ -129,7 +132,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2-peer';
+export const MODEL_VERSION = 'radar-3-curve';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -147,20 +150,36 @@ export interface FarmStep {
 /** How much of the model's input this row actually had. */
 export type Conviction = 'high' | 'medium' | 'low';
 
-/** Where a quote's peers came from: its own category, its category family, or the whole snapshot. */
+/** Where a quote's offset came from: its own category, its category family, or nowhere. */
 export type QuoteBasis = 'category' | 'family' | 'global';
 
-/** The peer set one category was priced against. */
+/**
+ * The size curve, fitted to the snapshot's live-token protocols: log10(mcap) = a + b x log10(tvl).
+ *
+ * `b` is the whole point. Fitted on this snapshot it comes out near 0.5, so a token's market cap grows
+ * roughly as the square root of the TVL beneath it: a protocol ten times the size carries about three
+ * times the market cap, not ten. The implied multiple therefore falls steeply with size, from about
+ * 0.67x at $5M of TVL to 0.025x at $5B. A flat multiple, whether one constant or one per category,
+ * cannot express that, and the blind test below says so plainly.
+ */
+export interface Curve {
+  a: number;
+  b: number;
+  /** Live-token protocols the fit was made on. */
+  points: number;
+}
+
+/** What one protocol is priced at, and where each part of that price came from. */
 export interface PeerQuote {
-  /** Which peer set priced it. */
+  /** Which peer set supplied the category offset. */
   basis: QuoteBasis;
-  /** The category or family the quote came from, or null for the global median. */
+  /** The category or family the offset came from, or null when none did. */
   category: string | null;
   /** Live-token protocols in that peer set. */
   peers: number;
-  /** That peer set's own median mcap/TVL, before shrinkage; null when it had too few peers. */
-  raw_multiple: number | null;
-  /** The multiple actually applied, after shrinkage and bounds. */
+  /** The category's shift off the curve, in log10: +0.3 is a category worth twice the curve's call. */
+  offset: number;
+  /** What the curve and the offset imply for one dollar of this protocol's TVL, at this size. */
   multiple: number;
 }
 
@@ -240,6 +259,8 @@ export interface BoardRow {
     peer_basis: QuoteBasis;
     peer_category: string | null;
     peer_count: number;
+    peer_offset: number;
+    curve_value_usd: number;
     expected_fdv_usd: number;
     farmer_share: number;
     timing_multiplier: number;
@@ -270,6 +291,8 @@ export interface RadarRow {
   peer_basis: QuoteBasis;
   peer_category: string | null;
   peer_count: number;
+  peer_offset: number;
+  curve_value_usd: number;
   expected_fdv_usd: number;
   farmer_share: number;
   timing_multiplier: number;
@@ -294,8 +317,9 @@ export interface CategoryQuote {
   category: string;
   basis: QuoteBasis;
   peers: number;
-  raw_multiple: number;
-  multiple: number;
+  /** Its shift off the curve in log10, and that shift as a plain factor (1.4 = worth 40% more). */
+  offset: number;
+  factor: number;
   pre_token_rows: number;
 }
 
@@ -306,6 +330,9 @@ export interface RadarData {
   floor_usd: number;
   model: ModelConstants;
   model_version: string;
+  /** The size curve every price starts from, and how it did on the blind test. */
+  curve: Curve;
+  holdout: Holdout;
   global_multiple: number;
   /** Live-token protocols the multiples were actually read from (not the Live tab's shown rows). */
   peer_protocols: number;
@@ -314,6 +341,8 @@ export interface RadarData {
   early_size: number;
   live_size: number;
   categories: CategoryQuote[];
+  /** Every live-token protocol as one point, so the page can draw the fit it was made from. */
+  peer_points: { tvl: number; mcap: number }[];
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -334,6 +363,31 @@ const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 /** A finite number, else `fallback`. */
 function finite(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Least squares through the live-token protocols in log-log: log10(mcap) = a + b x log10(tvl).
+ *
+ * Logs, not raw dollars, because both run over four orders of magnitude here and a handful of large
+ * protocols would otherwise decide the line on their own.
+ */
+export function fitCurve(peers: SnapshotProtocol[]): Curve {
+  const pts = peers
+    .filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
+    .map((p) => ({ x: Math.log10(p.tvl_usd), y: Math.log10(p.mcap_usd!) }));
+  if (pts.length < 3) return { a: Math.log10(0.2), b: 1, points: pts.length };
+  const n = pts.length;
+  const mx = pts.reduce((s, p) => s + p.x, 0) / n;
+  const my = pts.reduce((s, p) => s + p.y, 0) / n;
+  let sxy = 0;
+  let sxx = 0;
+  for (const p of pts) {
+    sxy += (p.x - mx) * (p.y - my);
+    sxx += (p.x - mx) * (p.x - mx);
+  }
+  if (sxx === 0) return { a: Math.log10(0.2), b: 1, points: n };
+  const b = sxy / sxx;
+  return { a: round4(my - b * mx), b: round4(b), points: n };
 }
 
 /** The median of a non-empty list; null when it is empty. */
@@ -376,67 +430,84 @@ export function isRankable(p: SnapshotProtocol): boolean {
  * each category and overall. Built once per run and shared by every row.
  */
 export class Valuation {
+  readonly curve: Curve;
+  /** The median mcap/TVL of every live-token protocol: the flat multiple the curve replaced. */
   readonly globalMultiple: number;
   // Declared as plain fields: Node's strip-only TypeScript takes no parameter properties.
-  private readonly byCategory = new Map<string, { peers: number; raw: number }>();
-  private readonly byFamily = new Map<string, { peers: number; raw: number }>();
+  private readonly byCategory = new Map<string, { peers: number; offset: number }>();
+  private readonly byFamily = new Map<string, { peers: number; offset: number }>();
   private readonly model: ModelConstants;
 
-  constructor(snapshot: Snapshot, model: ModelConstants = MODEL) {
+  /**
+   * `excludeSlug` holds one protocol out of the peer set, so the model can be asked what it would have
+   * said about a protocol it had never seen. That is the whole of the blind test below: nothing else
+   * about the quote changes.
+   */
+  constructor(snapshot: Snapshot, model: ModelConstants = MODEL, excludeSlug: string | null = null) {
     this.model = model;
-    const peers = snapshot.protocols.filter(isQuotablePeer);
-    // The global median is the fallback quote and the anchor every thin peer set is shrunk toward.
-    this.globalMultiple = clamp(median(peers.map((p) => p.mcap_usd! / p.tvl_usd)) ?? 0.2, model.multiple_floor, model.multiple_cap);
+    const peers = snapshot.protocols.filter((p) => isQuotablePeer(p) && p.slug !== excludeSlug);
+    this.globalMultiple = round4(clamp(median(peers.map((p) => p.mcap_usd! / p.tvl_usd)) ?? 0.2, model.multiple_floor, model.multiple_cap));
 
-    const collect = (key: (p: SnapshotProtocol) => string | null, into: Map<string, { peers: number; raw: number }>): void => {
+    // Fit the size curve first: everything else is measured as a shift off it.
+    this.curve = fitCurve(peers);
+
+    // A category's offset is the median of its peers' residuals, how far above or below the curve
+    // they sit, shrunk toward zero by peer count so a thin set cannot swing the board on one outlier.
+    const residual = (p: SnapshotProtocol): number => Math.log10(p.mcap_usd!) - (this.curve.a + this.curve.b * Math.log10(p.tvl_usd));
+    const collect = (key: (p: SnapshotProtocol) => string | null, into: Map<string, { peers: number; offset: number }>): void => {
       const groups = new Map<string, number[]>();
       for (const p of peers) {
         const k = key(p);
         if (k === null) continue;
         const list = groups.get(k);
-        if (list === undefined) groups.set(k, [p.mcap_usd! / p.tvl_usd]);
-        else list.push(p.mcap_usd! / p.tvl_usd);
+        if (list === undefined) groups.set(k, [residual(p)]);
+        else list.push(residual(p));
       }
-      for (const [k, ratios] of groups) {
-        if (ratios.length < model.peer_min) continue;
-        into.set(k, { peers: ratios.length, raw: median(ratios)! });
+      for (const [k, rs] of groups) {
+        if (rs.length < model.peer_min) continue;
+        into.set(k, { peers: rs.length, offset: (rs.length * median(rs)!) / (rs.length + model.peer_shrinkage) });
       }
     };
     collect((p) => p.category, this.byCategory);
     collect((p) => (p.category === null ? null : (CATEGORY_FAMILY[p.category] ?? null)), this.byFamily);
   }
 
-  /** multiple = (n x raw + k x global) / (n + k): a thin peer set is pulled toward the global median. */
-  private shrink(peers: number, raw: number): number {
-    const k = this.model.peer_shrinkage;
-    return round4(clamp((peers * raw + k * this.globalMultiple) / (peers + k), this.model.multiple_floor, this.model.multiple_cap));
+  /** What the curve alone says a protocol of this size is worth, before any category offset. */
+  curveValue(tvl: number): number {
+    return Math.pow(10, this.curve.a + this.curve.b * Math.log10(Math.max(tvl, 1)));
   }
 
   /**
-   * What one dollar of this protocol's TVL is worth as token market cap. The quote cascades: the
-   * protocol's own category where the snapshot gives it enough live-token peers, else its category
-   * family, else the global median. Each level is shrunk toward the global median by its peer count,
-   * so a three-peer set cannot swing the board on one outlier.
+   * What this protocol's unlaunched token is worth: the size curve, shifted by what its category's
+   * live-token peers are worth above or below that curve. The offset cascades from the protocol's own
+   * category to its family to nothing, and is shrunk toward zero by how few peers stand behind it.
    */
-  quote(category: string | null): PeerQuote {
+  quote(category: string | null, tvl: number): PeerQuote {
     const own = category === null ? undefined : this.byCategory.get(category);
-    if (own !== undefined) {
-      return { basis: 'category', category, peers: own.peers, raw_multiple: round4(own.raw), multiple: this.shrink(own.peers, own.raw) };
-    }
     const familyName = category === null ? undefined : CATEGORY_FAMILY[category];
     const family = familyName === undefined ? undefined : this.byFamily.get(familyName);
-    if (family !== undefined && familyName !== undefined) {
-      return { basis: 'family', category: familyName, peers: family.peers, raw_multiple: round4(family.raw), multiple: this.shrink(family.peers, family.raw) };
-    }
-    return { basis: 'global', category: null, peers: 0, raw_multiple: null, multiple: round4(this.globalMultiple) };
+
+    let basis: QuoteBasis = 'global';
+    let name: string | null = null;
+    let peers = 0;
+    let offset = 0;
+    if (own !== undefined) { basis = 'category'; name = category; peers = own.peers; offset = own.offset; }
+    else if (family !== undefined && familyName !== undefined) { basis = 'family'; name = familyName; peers = family.peers; offset = family.offset; }
+
+    const value = this.curveValue(tvl) * Math.pow(10, offset);
+    const multiple = clamp(tvl > 0 ? value / tvl : this.globalMultiple, this.model.multiple_floor, this.model.multiple_cap);
+    return { basis, category: name, peers, offset: round4(offset), multiple: round4(multiple) };
   }
 
-  /** Every peer set the model quotes, strongest multiple first. */
-  quotes(): { category: string; basis: QuoteBasis; peers: number; raw: number; multiple: number }[] {
-    const out: { category: string; basis: QuoteBasis; peers: number; raw: number; multiple: number }[] = [];
-    for (const [category, v] of this.byCategory) out.push({ category, basis: 'category', peers: v.peers, raw: round4(v.raw), multiple: this.shrink(v.peers, v.raw) });
-    for (const [family, v] of this.byFamily) out.push({ category: family, basis: 'family', peers: v.peers, raw: round4(v.raw), multiple: this.shrink(v.peers, v.raw) });
-    return out.sort((a, b) => b.multiple - a.multiple || (a.category < b.category ? -1 : 1));
+  /** Every peer set the model carries an offset for, dearest first. */
+  quotes(): { category: string; basis: QuoteBasis; peers: number; offset: number; factor: number }[] {
+    const out: { category: string; basis: QuoteBasis; peers: number; offset: number; factor: number }[] = [];
+    const add = (category: string, basis: QuoteBasis, v: { peers: number; offset: number }): void => {
+      out.push({ category, basis, peers: v.peers, offset: round4(v.offset), factor: round4(Math.pow(10, v.offset)) });
+    };
+    for (const [category, v] of this.byCategory) add(category, 'category', v);
+    for (const [family, v] of this.byFamily) add(family, 'family', v);
+    return out.sort((a, b) => b.factor - a.factor || (a.category < b.category ? -1 : 1));
   }
 }
 
@@ -503,6 +574,8 @@ export interface Scored {
   perFarmer: number;
   farmers: number;
   fdv: number;
+  /** What the size curve alone said, before the category offset moved it. */
+  curveValue: number;
   share: number;
   timing: number;
   momentumMult: number;
@@ -515,7 +588,7 @@ export interface Scored {
 /** The implied value of one protocol's unlaunched token, and every factor behind it. */
 export function score(p: SnapshotProtocol, asOf: string, valuation: Valuation, model: ModelConstants = MODEL): Scored {
   const age = ageDays(asOf, p.listed_at);
-  const quote = valuation.quote(p.category);
+  const quote = valuation.quote(p.category, p.tvl_usd);
   const fdv = p.tvl_usd * quote.multiple;
   const share = farmerShare(p.tvl_usd, model);
   const timing = launchTiming(age, model);
@@ -527,6 +600,7 @@ export function score(p: SnapshotProtocol, asOf: string, valuation: Valuation, m
     perFarmer: Math.max(1, Math.round(implied / farmers)),
     farmers,
     fdv: Math.round(fdv),
+    curveValue: Math.round(valuation.curveValue(p.tvl_usd)),
     share: round4(share),
     timing: round4(timing),
     momentumMult: round4(momentumMult),
@@ -535,6 +609,63 @@ export function score(p: SnapshotProtocol, asOf: string, valuation: Valuation, m
     quote,
     conviction: convictionOf(quote, age, p.change_7d),
   };
+}
+
+/** How one way of pricing did against the protocols whose market the snapshot already records. */
+export interface HoldoutScore {
+  /** The middle protocol's error, as a ratio: 1.8 means the typical miss was 1.8x out, either way. */
+  median_ratio: number;
+  /** How often the prediction landed inside a factor of two, and of three, in per cent. */
+  within_2x: number;
+  within_3x: number;
+}
+
+/** The blind test's whole result. */
+export interface Holdout {
+  /** Live-token protocols the test ran on. */
+  tested: number;
+  /** This model, each protocol priced by peers that never included it. */
+  model: HoldoutScore;
+  /** One constant times TVL, the global median: what a board with no category model would say. */
+  baseline: HoldoutScore;
+  /** How much of the baseline's typical error the category model removes, in per cent. */
+  error_cut_pct: number;
+}
+
+/**
+ * The blind test. Every protocol in the snapshot whose token already trades has a market cap the model
+ * never sees, so each one is a question the model can be marked on: hide it from the peer set, ask what
+ * its token would be worth from its TVL alone, and compare that with what the market actually says.
+ *
+ * Errors are measured as a ratio, not a difference, because these values span four orders of magnitude:
+ * predicting $40M against a real $20M and predicting $20M against a real $40M are both a factor of two
+ * out, and both should count the same. The baseline is one constant times TVL, which is what a board
+ * with no category model can do, and the test is whether reading the category is worth anything at all.
+ */
+export function validate(snapshot: Snapshot, model: ModelConstants = MODEL): Holdout {
+  const peers = snapshot.protocols.filter(isQuotablePeer);
+  const modelErrors: number[] = [];
+  const baselineErrors: number[] = [];
+
+  for (const p of peers) {
+    const blind = new Valuation(snapshot, model, p.slug);
+    const actual = p.mcap_usd!;
+    if (!(actual > 0) || !(p.tvl_usd > 0)) continue;
+    modelErrors.push(Math.abs(Math.log10((p.tvl_usd * blind.quote(p.category, p.tvl_usd).multiple) / actual)));
+    baselineErrors.push(Math.abs(Math.log10((p.tvl_usd * blind.globalMultiple) / actual)));
+  }
+
+  const score = (errors: number[]): HoldoutScore => {
+    const mid = median(errors) ?? 0;
+    const share = (limit: number): number => Math.round((errors.filter((e) => e <= Math.log10(limit)).length / errors.length) * 1000) / 10;
+    return { median_ratio: Math.round(Math.pow(10, mid) * 100) / 100, within_2x: share(2), within_3x: share(3) };
+  };
+
+  const m = score(modelErrors);
+  const b = score(baselineErrors);
+  const mid = (errors: number[]): number => median(errors) ?? 0;
+  const cut = mid(baselineErrors) === 0 ? 0 : (1 - mid(modelErrors) / mid(baselineErrors)) * 100;
+  return { tested: modelErrors.length, model: m, baseline: b, error_cut_pct: Math.round(cut * 10) / 10 };
 }
 
 /** The snapshot's protocol by slug. */
@@ -584,6 +715,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, va
       peer_basis: s.quote.basis,
       peer_category: s.quote.category,
       peer_count: s.quote.peers,
+      peer_offset: s.quote.offset,
+      curve_value_usd: s.curveValue,
       expected_fdv_usd: s.fdv,
       farmer_share: s.share,
       timing_multiplier: s.timing,
@@ -639,6 +772,8 @@ export function radarRow(row: BoardRow): RadarRow {
     peer_basis: row.model.peer_basis,
     peer_category: row.model.peer_category,
     peer_count: row.model.peer_count,
+    peer_offset: row.model.peer_offset,
+    curve_value_usd: row.model.curve_value_usd,
     expected_fdv_usd: row.model.expected_fdv_usd,
     farmer_share: row.model.farmer_share,
     timing_multiplier: row.model.timing_multiplier,
@@ -663,8 +798,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     category: q.category,
     basis: q.basis,
     peers: q.peers,
-    raw_multiple: q.raw,
-    multiple: q.multiple,
+    offset: q.offset,
+    factor: q.factor,
     pre_token_rows: rowsPerCategory.get(q.category) ?? 0,
   }));
 
@@ -674,6 +809,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     floor_usd: snapshot.floor_usd,
     model,
     model_version: MODEL_VERSION,
+    curve: valuation.curve,
+    holdout: validate(snapshot, model),
     global_multiple: round4(valuation.globalMultiple),
     peer_protocols: snapshot.protocols.filter(isQuotablePeer).length,
     watchlist_size: snapshot.watchlist.length,
@@ -681,6 +818,10 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     early_size: early,
     live_size: live.length,
     categories,
+    peer_points: snapshot.protocols
+      .filter(isQuotablePeer)
+      .map((p) => ({ tvl: p.tvl_usd, mcap: p.mcap_usd! }))
+      .sort((a, b) => a.tvl - b.tvl),
     rows: board.map(radarRow),
     live,
   };

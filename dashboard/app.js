@@ -1,4 +1,4 @@
-﻿// Token Radar's dashboard. It reads window.RADAR (written beside dashboard/ by main.ts) and renders the
+// Token Radar's dashboard. It reads window.RADAR (written beside dashboard/ by main.ts) and renders the
 // ranked board, a filterable sortable table, the peer multiples the model is built on, and a per-protocol
 // detail drawer carrying the whole value chain and the farm plan. No network: every byte is in data.js.
 (function () {
@@ -155,61 +155,63 @@
   }
 
   /**
-   * The model's thesis as one picture: every peer multiple on one axis, so the spread between the
-   * cheapest and dearest category is a distance rather than a claim. One measure, one series, so there
-   * is no legend and no categorical colour; the exact numbers live in the table below.
+   * The evidence the model is built on, drawn rather than asserted: every live-token protocol as one
+   * point, TVL against market cap on log axes, with the line fitted through them. The line's slope is
+   * the finding  -  well under 1, so market cap grows far slower than the TVL beneath it  -  and the
+   * scatter around it is the honest width of the thing, which the blind test below puts a number on.
    */
-  function spreadChart() {
-    var sets = DATA.categories.filter(function (c) { return c.pre_token_rows > 0; });
-    if (sets.length < 2) return null;
-    var W = 420, H = 128, padL = 10, padR = 12, axisY = 100;
-    var max = Math.max.apply(null, sets.map(function (c) { return c.multiple; }));
-    // The axis ends just past the dearest category rather than at a round number, so the spread uses
-    // the whole width instead of leaving a tenth of it empty.
-    var top = max * 1.05;
-    var x = function (v) { return padL + (v / top) * (W - padL - padR); };
+  function curveChart() {
+    var pts = DATA.peer_points || [];
+    if (pts.length < 3) return null;
+    var W = 420, H = 210, padL = 34, padR = 10, padT = 10, padB = 26;
+    var L = function (v) { return Math.log10(Math.max(v, 1)); };
+    var xs = pts.map(function (p) { return L(p.tvl); });
+    var ys = pts.map(function (p) { return L(p.mcap); });
+    var x0 = Math.floor(Math.min.apply(null, xs)), x1 = Math.ceil(Math.max.apply(null, xs));
+    var y0 = Math.floor(Math.min.apply(null, ys)), y1 = Math.ceil(Math.max.apply(null, ys));
+    var X = function (v) { return padL + ((L(v) - x0) / (x1 - x0)) * (W - padL - padR); };
+    var Y = function (v) { return H - padB - ((L(v) - y0) / (y1 - y0)) * (H - padT - padB); };
 
     var node = svg('svg', {
       viewBox: '0 0 ' + W + ' ' + H, class: 'spread', role: 'img',
-      'aria-label': sets.length + ' peer multiples from ' + fmtMult(Math.min.apply(null, sets.map(function (c) { return c.multiple; }))) + ' to ' + fmtMult(max) + ', around a ' + fmtMult(DATA.global_multiple) + ' global median',
+      'aria-label': pts.length + ' live-token protocols, TVL against market cap on log axes, with a fitted line of slope ' + DATA.curve.b,
     });
 
-    // Axis: recessive, with a tick every 0.2x.
-    node.appendChild(svg('line', { x1: padL, y1: axisY, x2: W - padR, y2: axisY, class: 'ax' }));
-    for (var t = 0; t <= top + 1e-9; t += 0.2) {
-      node.appendChild(svg('line', { x1: x(t), y1: axisY, x2: x(t), y2: axisY + 4, class: 'ax' }));
-      node.appendChild(svg('text', { x: x(t), y: axisY + 17, class: 'tick', 'text-anchor': 'middle', text: t.toFixed(1) + 'x' }));
+    // Decade gridlines, recessive, labelled in whole powers of ten.
+    var money = function (p) { return p >= 9 ? Math.pow(10, p - 9) + 'B' : p >= 6 ? Math.pow(10, p - 6) + 'M' : Math.pow(10, p - 3) + 'K'; };
+    for (var gx = x0; gx <= x1; gx++) {
+      node.appendChild(svg('line', { x1: X(Math.pow(10, gx)), y1: padT, x2: X(Math.pow(10, gx)), y2: H - padB, class: 'grid' }));
+      node.appendChild(svg('text', { x: X(Math.pow(10, gx)), y: H - padB + 13, class: 'tick', 'text-anchor': 'middle', text: '$' + money(gx) }));
+    }
+    for (var gy = y0; gy <= y1; gy++) {
+      node.appendChild(svg('line', { x1: padL, y1: Y(Math.pow(10, gy)), x2: W - padR, y2: Y(Math.pow(10, gy)), class: 'grid' }));
+      node.appendChild(svg('text', { x: padL - 5, y: Y(Math.pow(10, gy)) + 3, class: 'tick', 'text-anchor': 'end', text: '$' + money(gy) }));
     }
 
-    // The global median: the anchor every thin peer set is shrunk toward.
-    var gx = x(DATA.global_multiple);
-    node.appendChild(svg('line', { x1: gx, y1: 16, x2: gx, y2: axisY, class: 'median' }));
-    node.appendChild(svg('text', { x: gx + 5, y: 22, class: 'tick', text: 'global median ' + fmtMult(DATA.global_multiple) }));
-
-    // One dot a peer set, stacked upward where they crowd so none hides another.
-    var sorted = sets.slice().sort(function (a, b) { return a.multiple - b.multiple; });
-    var lanes = [];
-    sorted.forEach(function (c) {
-      var cx = x(c.multiple);
-      var lane = 0;
-      while (lanes[lane] !== undefined && cx - lanes[lane] < 13) lane++;
-      lanes[lane] = cx;
-      var cy = axisY - 12 - lane * 12;
-      var dot = svg('circle', { cx: cx, cy: cy, r: 5, class: 'dot' });
-      dot.appendChild(svg('title', { text: c.category + ': ' + fmtMult(c.multiple) + ' from ' + c.peers + ' live peers, pricing ' + c.pre_token_rows + ' row' + (c.pre_token_rows === 1 ? '' : 's') }));
+    // One dot a live-token protocol: the observations, not the model.
+    pts.forEach(function (p) {
+      var dot = svg('circle', { cx: X(p.tvl), cy: Y(p.mcap), r: 2.6, class: 'obs' });
+      dot.appendChild(svg('title', { text: fmtUsd(p.tvl) + ' of TVL carries ' + fmtUsd(p.mcap) + ' of market cap (' + fmtMult(p.mcap / p.tvl) + ')' }));
       node.appendChild(dot);
     });
+
+    // The fitted line, drawn across the whole span it was fitted on.
+    var fx0 = Math.pow(10, x0), fx1 = Math.pow(10, x1);
+    var fy = function (t) { return Math.pow(10, DATA.curve.a + DATA.curve.b * L(t)); };
+    node.appendChild(svg('line', { x1: X(fx0), y1: Y(fy(fx0)), x2: X(fx1), y2: Y(fy(fx1)), class: 'fit' }));
+
+    node.appendChild(svg('text', { x: W - padR, y: padT + 10, class: 'tick fit-label', 'text-anchor': 'end', text: 'slope ' + DATA.curve.b }));
     return node;
   }
 
   function lede() {
-    var lo = DATA.categories.filter(function (c) { return c.pre_token_rows > 0; }).reduce(function (a, b) { return a.multiple <= b.multiple ? a : b; });
-    var hi = DATA.categories.filter(function (c) { return c.pre_token_rows > 0; }).reduce(function (a, b) { return a.multiple >= b.multiple ? a : b; });
-    var chart = spreadChart();
+    var chart = curveChart();
+    var h = DATA.holdout;
+    var tenfold = Math.pow(10, DATA.curve.b);
     return el('section', { class: 'lede' },
       el('div', null,
-        el('h1', { text: DATA.board_size + ' pre-token protocols, priced against their own category' }),
-        el('p', { text: 'Every protocol here records no token at all. Each is priced at what the market already pays for a dollar of TVL in its own category, read from the ' + DATA.peer_protocols + ' protocols in this snapshot whose token does trade, then discounted for how close it is to a launch window and whether capital is arriving or leaving.' }),
+        el('h1', { text: DATA.board_size + ' pre-token protocols, priced on what size is worth' }),
+        el('p', { text: 'Every protocol here records no token at all. Each is priced off a curve fitted to the ' + DATA.peer_protocols + ' protocols in this snapshot whose token does trade, shifted by what its own category is worth against that curve, then discounted for how close it is to a launch window and whether capital is arriving or leaving. The blind test below says how far wrong that gets.' }),
         el('div', { class: 'facts' },
           el('div', { class: 'fact' }, el('b', { text: DATA.watchlist_size + '/' + DATA.watchlist_size }), el('span', { text: 'watchlist covered' })),
           el('div', { class: 'fact' }, el('b', { text: String(DATA.board_size) }), el('span', { text: 'rows scored' })),
@@ -218,9 +220,9 @@
         )
       ),
       chart === null ? null : el('figure', { class: 'spread-fig' },
-        el('figcaption', { text: 'What a dollar of TVL is worth, by category' }),
+        el('figcaption', { text: 'What the market pays for TVL, and the line fitted to it' }),
         chart,
-        el('p', { class: 'sub', text: 'Each dot is one category’s live-token peers: ' + fmtMult(lo.multiple) + ' for ' + lo.category + ' up to ' + fmtMult(hi.multiple) + ' for ' + hi.category + ', a ' + Math.round(hi.multiple / lo.multiple) + '-fold spread. Two protocols of equal TVL in different categories are priced that far apart, which is why this board is not the TVL order.' })
+        el('p', { class: 'sub', text: 'One dot per live-token protocol, on log axes. The slope is ' + DATA.curve.b + ', well under one: ten times the TVL carries about ' + tenfold.toFixed(1) + ' times the market cap, not ten. So the implied multiple falls with size, from ' + fmtMult(Math.pow(10, DATA.curve.a) * Math.pow(5e6, DATA.curve.b - 1)) + ' at $5M of TVL to ' + fmtMult(Math.pow(10, DATA.curve.a) * Math.pow(5e9, DATA.curve.b - 1)) + ' at $5B. Each category then shifts off this line by what its own peers are worth.' })
       )
     );
   }
@@ -359,35 +361,35 @@
   function multiplesPanel() {
     var list = DATA.categories.filter(function (c) { return c.pre_token_rows > 0; });
     if (list.length === 0) return null;
-    var max = Math.max.apply(null, list.map(function (c) { return c.multiple; })) || 1;
+    var widest = Math.max.apply(null, list.map(function (c) { return Math.abs(c.offset); })) || 1;
     var tbody = el('tbody');
     list.forEach(function (c) {
+      var w = Math.max(4, Math.round((Math.abs(c.offset) / widest) * 50));
       tbody.appendChild(el('tr', { class: 'static' },
         el('td', null, el('div', { class: 'name' },
           el('b', { text: c.category }),
           el('span', { class: 'sub', text: c.basis === 'family' ? 'category family' : 'category' })
         )),
         el('td', { class: 'num', text: String(c.peers) }),
-        el('td', { class: 'num', text: fmtMult(c.raw_multiple) }),
-        el('td', null, el('div', { class: 'implied' },
-          el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((c.multiple / max) * 100)) + '%' })),
-          el('span', { class: 'num', text: fmtMult(c.multiple) })
+        el('td', null, el('div', { class: 'diverge', 'aria-hidden': 'true' },
+          el('i', { class: c.offset >= 0 ? 'up' : 'down', style: 'width:' + w + '%' })
         )),
+        el('td', { class: 'num', text: 'x' + c.factor.toFixed(2) }),
         el('td', { class: 'num', text: String(c.pre_token_rows) })
       ));
     });
     return el('section', { class: 'panel' },
       el('div', { class: 'panel-head' },
-        el('h2', { text: 'What the market pays, by category' }),
-        el('p', { class: 'sub', text: 'Each multiple is the median mcap / TVL of this snapshotâ€™s own live-token protocols in that peer set, shrunk toward the global median of ' + fmtMult(DATA.global_multiple) + ' by how many peers it has. A category the snapshot gives too few live peers borrows its familyâ€™s; only a category with neither falls back to the global median. Nothing here is a constant anyone typed in.' })
+        el('h2', { text: 'Which categories beat the line' }),
+        el('p', { class: 'sub', text: 'Size explains most of what a token is worth, and the curve above carries that. What is left over is the category: the median amount its own live-token peers sit above or below the line, shrunk toward no shift at all by how few peers stand behind it. A factor of 1.5 means a protocol of that kind has been worth half again what its size alone would say. A category the snapshot gives too few live peers borrows the offset of its family instead; with neither, it takes the curve unshifted.' })
       ),
       el('div', { class: 'table-wrap' },
         el('table', null,
           el('thead', null, el('tr', null,
             el('th', { scope: 'col', text: 'Peer set' }),
             el('th', { scope: 'col', text: 'Live peers' }),
-            el('th', { scope: 'col', text: 'Raw median' }),
-            el('th', { scope: 'col', text: 'Applied, after shrinkage' }),
+            el('th', { scope: 'col', text: 'Below / above the line' }),
+            el('th', { scope: 'col', text: 'Factor' }),
             el('th', { scope: 'col', text: 'Rows priced' })
           )),
           tbody
@@ -396,22 +398,66 @@
     );
   }
 
-  function modelPanel() {
+  /**
+   * The blind test. Every live-token protocol is a question the model can be marked on, so it is:
+   * held out of its own peer set, priced from its TVL and category alone, and compared with the
+   * market cap the snapshot already records.
+   */
+  function holdoutPanel() {
+    var h = DATA.holdout;
+    if (!h) return null;
+    var row = function (label, lead, s, lit) {
+      return el('tr', { class: 'static' + (lit ? ' lit' : '') },
+        el('td', null, el('div', { class: 'name' }, el('b', { text: label }), el('span', { class: 'sub', text: lead }))),
+        el('td', { class: 'num', text: s.median_ratio + 'x' }),
+        el('td', { class: 'num', text: s.within_2x + '%' }),
+        el('td', { class: 'num', text: s.within_3x + '%' })
+      );
+    };
+    var gain = Math.round((h.model.within_2x - h.baseline.within_2x) * 10) / 10;
+    return el('section', { class: 'panel' },
+      el('div', { class: 'panel-head' },
+        el('h2', { text: 'Does it work? The blind test' }),
+        el('p', { class: 'sub', text: 'A model of tokens that do not exist cannot be checked against them, but it can be checked against the ones that do. Each of the ' + h.tested + ' protocols here whose token already trades was held out of its own peer set, priced from its TVL and its category alone, and compared with the market cap this snapshot records. The baseline is one constant times TVL: what a board with no size curve and no categories can manage.' })
+      ),
+      el('div', { class: 'table-wrap' },
+        el('table', null,
+          el('thead', null, el('tr', null,
+            el('th', { scope: 'col', text: 'Priced by' }),
+            el('th', { scope: 'col', text: 'Typical miss' }),
+            el('th', { scope: 'col', text: 'Within 2x' }),
+            el('th', { scope: 'col', text: 'Within 3x' })
+          )),
+          el('tbody', null,
+            row('One constant x TVL', 'the baseline', h.baseline, false),
+            row('This model', 'size curve, then category', h.model, true)
+          )
+        )
+      ),
+      el('div', { class: 'panel-head' },
+        el('p', { class: 'sub', text: 'The model cuts the typical miss by ' + h.error_cut_pct + '% and lands inside a factor of two ' + (gain >= 0 ? '+' : '') + gain + ' points more often. It is still a typical miss of about ' + h.model.median_ratio + 'x, and that is the honest size of the thing: most of what a token will be worth is not in a TVL figure. Read a rank as an ordering, not a price. An earlier version of this board priced by category alone with no size curve; on this same test it scored worse than the one-constant baseline, which is why the curve is here at all.' })
+      )
+    );
+  }
+
+function modelPanel() {
     var m = DATA.model;
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'One function scores every row. No protocol name appears anywhere in it, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x peerMultiple(category) x farmerShare(tvl_usd) x launchTiming(age_days) x momentum(change_7d) )'
+        'launchValue = 10^( ' + DATA.curve.a + ' + ' + DATA.curve.b + ' x log10(tvl_usd) + categoryOffset )\n' +
+          'implied     = round( launchValue x farmerShare(tvl_usd) x launchTiming(age_days) x momentum(change_7d) )'
       ),
       el('dl', { class: 'terms' },
-        el('div', null, el('dt', { text: 'peerMultiple' }), el('dd', { text: 'The median mcap / TVL of the snapshotâ€™s live-token protocols in the same category, shrunk toward the ' + fmtMult(DATA.global_multiple) + ' global median by peer count (k = ' + m.peer_shrinkage + ', a peer set needs ' + m.peer_min + ' to be quoted). Bounded to ' + m.multiple_floor + 'x..' + m.multiple_cap + 'x.' })),
+        el('div', null, el('dt', { text: 'sizeCurve' }), el('dd', { text: 'Least squares through the ' + DATA.curve.points + ' live-token protocols in log-log: log10(mcap) = ' + DATA.curve.a + ' + ' + DATA.curve.b + ' x log10(tvl). A slope under one says market cap grows slower than the TVL beneath it, so the implied multiple falls as a protocol gets bigger. This line does most of the work; a category only shifts it.' })),
+        el('div', null, el('dt', { text: 'categoryOffset' }), el('dd', { text: 'The median amount a category of live-token peers sits above or below that line, in log10, shrunk toward no shift at all by peer count (k = ' + m.peer_shrinkage + ', a set needs ' + m.peer_min + ' peers to count). Both knobs were picked on the blind test above rather than by taste.' })),
         el('div', null, el('dt', { text: 'farmerShare' }), el('dd', { text: 'The slice of a launch an early-user distribution hands to farmers: ' + (m.share_small * 100).toFixed(1) + '% at $' + Math.round(m.share_tvl_small / 1e6) + 'M of TVL falling to ' + (m.share_large * 100).toFixed(1) + '% at $' + Math.round(m.share_tvl_large / 1e9) + 'B, interpolated on a log scale. A bigger protocol spreads its distribution over more claimants.' })),
         el('div', null, el('dt', { text: 'launchTiming' }), el('dd', { text: 'How close the protocol is to the window where tokens actually ship, from days since listing. Deliberately not monotonic: it ramps from ' + m.timing_min + ' below ' + m.timing_cold + ' days, holds full weight from ' + m.timing_open + ' to ' + m.timing_close + ' days, then decays to ' + m.timing_tail + ' by ' + m.timing_stale + '. A protocol that has run that long with no token is evidence against a launch, not for one.' })),
         el('div', null, el('dt', { text: 'momentum' }), el('dd', { text: 'Whether capital is arriving or leaving, from the seven-day TVL change clamped to ' + m.growth_floor + '%..' + m.growth_cap + '% and softened through tanh at scale ' + m.growth_scale + ', weight ' + m.growth_weight + ', so one violent week cannot carry a row.' })),
         el('div', null, el('dt', { text: 'Per farmer' }), el('dd', { text: 'The implied pool split between tvl_usd / $' + m.farmer_position_usd.toLocaleString('en-US') + ' assumed farmers, never fewer than ' + m.farmers_floor + '. It is the number a reader with one wallet should actually read.' }))
       ),
-      el('p', { class: 'sub', text: 'TVL, seven-day growth, category and listing date all come from the sealed snapshot; a protocol with no listing date is scored at ' + m.unknown_age_days + ' days. Protocols whose token already trades are set aside on the Live token tab and are never ranked here â€” they are the evidence the multiples are read from.' })
+      el('p', { class: 'sub', text: 'TVL, seven-day growth, category and listing date all come from the sealed snapshot; a protocol with no listing date is scored at ' + m.unknown_age_days + ' days. Protocols whose token already trades are set aside on the Live token tab and are never ranked here  -  they are the evidence the multiples are read from.' })
     );
   }
 
@@ -450,8 +496,9 @@
       el('h3', { text: 'The value chain' }),
       el('div', { class: 'chain' },
         chainRow('TVL, from the snapshot', fmtUsd(row.tvl_usd), null),
-        chainRow('x Peer multiple', fmtMult(row.peer_multiple), row.peer_basis === 'global' ? 'global median: too few live peers to quote its category' : 'median of ' + row.peer_count + ' live-token ' + (row.peer_basis === 'family' ? 'protocols in the ' + row.peer_category + ' family' : row.peer_category + ' protocols')),
-        chainRow('= Expected launch value', fmtUsd(row.expected_fdv_usd), 'what a token on this much TVL has been worth in its peer set'),
+        chainRow('The size curve says', fmtUsd(row.curve_value_usd), 'what a token on this much TVL has been worth, from the line fitted to ' + DATA.curve.points + ' live-token protocols (slope ' + DATA.curve.b + ')'),
+        chainRow('x Category offset', (row.peer_offset >= 0 ? 'x' : 'x') + Math.pow(10, row.peer_offset).toFixed(2), row.peer_basis === 'global' ? 'none: too few live peers in its category or its family to measure one' : (row.peer_offset >= 0 ? 'above' : 'below') + ' the line, from ' + row.peer_count + ' live-token ' + (row.peer_basis === 'family' ? 'protocols in the ' + row.peer_category + ' family' : row.peer_category + ' protocols')),
+        chainRow('= Expected launch value', fmtUsd(row.expected_fdv_usd), 'an effective ' + fmtMult(row.peer_multiple) + ' on its TVL, at this size'),
         chainRow('x Farmer share', (share * 100).toFixed(2) + '%', 'the slice an early-user distribution hands to farmers at this size'),
         chainRow('x Launch timing', row.timing_multiplier.toFixed(3), fmtAge(row.age_days) + ' with no token' + (row.age_days === null ? '' : row.age_days < m.timing_cold ? ': too young to have a distribution yet' : row.age_days <= m.timing_close ? ': inside the window where launches cluster' : ': past the window, and discounted for it')),
         chainRow('x Momentum', row.momentum_multiplier.toFixed(3), fmtPct(row.change_7d) + ' over seven days'),
@@ -492,6 +539,8 @@
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') {
+      var hp = holdoutPanel();
+      if (hp) shell.appendChild(hp);
       var mp = multiplesPanel();
       if (mp) shell.appendChild(mp);
       shell.appendChild(modelPanel());

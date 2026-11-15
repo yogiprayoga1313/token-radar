@@ -105,9 +105,22 @@ a { color: var(--accent); }
 .spread-fig .sub { margin-top: var(--step-3); max-width: 52ch; line-height: 1.5; }
 .spread { width: 100%; height: auto; display: block; overflow: visible; }
 .spread .ax { stroke: var(--rule); stroke-width: 1; }
+.spread .grid { stroke: var(--border); stroke-width: 1; }
 .spread .tick { fill: var(--muted); font-family: var(--font-num); font-size: 9px; }
-.spread .median { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
-.spread .dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+/* The observations are recessive; the line fitted through them is not. */
+.spread .obs { fill: var(--ink); fill-opacity: 0.38; }
+.spread .fit { stroke: var(--accent); stroke-width: 2; }
+.spread .fit-label { fill: var(--accent); font-weight: 600; }
+
+/* A category's shift off the line, signed: right of centre is above it, left is below. */
+.diverge { position: relative; width: 120px; height: 7px; background: var(--sunken); border-radius: 4px; }
+.diverge::before { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--rule); }
+.diverge i { position: absolute; top: 0; height: 100%; border-radius: 4px; }
+.diverge i.up { left: 50%; background: var(--accent); }
+.diverge i.down { right: 50%; background: var(--muted); }
+
+/* The row the blind test is about. */
+tbody tr.lit, tbody tr.lit:hover { background: var(--accent-soft); }
 
 .controls { display: flex; flex-wrap: wrap; align-items: end; gap: var(--step-3); padding: var(--step-4) 0; border-top: 1px solid var(--rule); }
 .field { display: grid; gap: var(--step-1); }

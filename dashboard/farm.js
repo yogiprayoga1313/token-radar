@@ -199,7 +199,7 @@
         time: hold + ' days'
       },
       {
-        text: 'Before you withdraw, open the protocol’s own site and check its points or rewards page from the link it publishes there. Never sign a claim from a message, a search advert or a direct message, and never pay to claim.',
+        text: "Before you withdraw, open the protocol's own site and check its points or rewards page from the link it publishes there. Never sign a claim from a message, a search advert or a direct message, and never pay to claim.",
         cost: 'nothing to check, and never pay a claim fee',
         time: '10 minutes'
       },
@@ -213,7 +213,7 @@
     return steps.map(function (s) {
       var t = s.text + ' Cost: ' + s.cost + '. Time: ' + s.time + '.';
       if (t.length > 600) t = t.slice(0, 596) + '...';
-      if (t.length < 20) t = t + ' Hold the position and check the protocol’s own page.';
+      if (t.length < 20) t = t + " Hold the position and check the protocol's own page.";
       return t;
     });
   }
