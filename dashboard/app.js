@@ -144,19 +144,83 @@
     );
   }
 
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  function svg(tag, attrs) {
+    var node = document.createElementNS(SVGNS, tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === 'text') node.textContent = attrs[k];
+      else if (attrs[k] !== null && attrs[k] !== undefined) node.setAttribute(k, attrs[k]);
+    });
+    return node;
+  }
+
+  /**
+   * The model's thesis as one picture: every peer multiple on one axis, so the spread between the
+   * cheapest and dearest category is a distance rather than a claim. One measure, one series, so there
+   * is no legend and no categorical colour; the exact numbers live in the table below.
+   */
+  function spreadChart() {
+    var sets = DATA.categories.filter(function (c) { return c.pre_token_rows > 0; });
+    if (sets.length < 2) return null;
+    var W = 420, H = 128, padL = 10, padR = 12, axisY = 100;
+    var max = Math.max.apply(null, sets.map(function (c) { return c.multiple; }));
+    // The axis ends just past the dearest category rather than at a round number, so the spread uses
+    // the whole width instead of leaving a tenth of it empty.
+    var top = max * 1.05;
+    var x = function (v) { return padL + (v / top) * (W - padL - padR); };
+
+    var node = svg('svg', {
+      viewBox: '0 0 ' + W + ' ' + H, class: 'spread', role: 'img',
+      'aria-label': sets.length + ' peer multiples from ' + fmtMult(Math.min.apply(null, sets.map(function (c) { return c.multiple; }))) + ' to ' + fmtMult(max) + ', around a ' + fmtMult(DATA.global_multiple) + ' global median',
+    });
+
+    // Axis: recessive, with a tick every 0.2x.
+    node.appendChild(svg('line', { x1: padL, y1: axisY, x2: W - padR, y2: axisY, class: 'ax' }));
+    for (var t = 0; t <= top + 1e-9; t += 0.2) {
+      node.appendChild(svg('line', { x1: x(t), y1: axisY, x2: x(t), y2: axisY + 4, class: 'ax' }));
+      node.appendChild(svg('text', { x: x(t), y: axisY + 17, class: 'tick', 'text-anchor': 'middle', text: t.toFixed(1) + 'x' }));
+    }
+
+    // The global median: the anchor every thin peer set is shrunk toward.
+    var gx = x(DATA.global_multiple);
+    node.appendChild(svg('line', { x1: gx, y1: 16, x2: gx, y2: axisY, class: 'median' }));
+    node.appendChild(svg('text', { x: gx + 5, y: 22, class: 'tick', text: 'global median ' + fmtMult(DATA.global_multiple) }));
+
+    // One dot a peer set, stacked upward where they crowd so none hides another.
+    var sorted = sets.slice().sort(function (a, b) { return a.multiple - b.multiple; });
+    var lanes = [];
+    sorted.forEach(function (c) {
+      var cx = x(c.multiple);
+      var lane = 0;
+      while (lanes[lane] !== undefined && cx - lanes[lane] < 13) lane++;
+      lanes[lane] = cx;
+      var cy = axisY - 12 - lane * 12;
+      var dot = svg('circle', { cx: cx, cy: cy, r: 5, class: 'dot' });
+      dot.appendChild(svg('title', { text: c.category + ': ' + fmtMult(c.multiple) + ' from ' + c.peers + ' live peers, pricing ' + c.pre_token_rows + ' row' + (c.pre_token_rows === 1 ? '' : 's') }));
+      node.appendChild(dot);
+    });
+    return node;
+  }
+
   function lede() {
+    var lo = DATA.categories.filter(function (c) { return c.pre_token_rows > 0; }).reduce(function (a, b) { return a.multiple <= b.multiple ? a : b; });
+    var hi = DATA.categories.filter(function (c) { return c.pre_token_rows > 0; }).reduce(function (a, b) { return a.multiple >= b.multiple ? a : b; });
+    var chart = spreadChart();
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.board_size + ' pre-token protocols, priced against their own category' }),
-        el('p', { text: 'Every protocol here records no token at all. Each is valued at what the market already pays for a dollar of TVL in its own category, read from the ' + DATA.peer_protocols + ' protocols in this snapshot whose token does trade, then discounted for how close it is to a launch window and whether capital is arriving or leaving. The watchlist is the floor, not the ceiling: ' + DATA.early_size + ' rows sit below it. Implied value is a model, not a promise.' })
+        el('p', { text: 'Every protocol here records no token at all. Each is priced at what the market already pays for a dollar of TVL in its own category, read from the ' + DATA.peer_protocols + ' protocols in this snapshot whose token does trade, then discounted for how close it is to a launch window and whether capital is arriving or leaving.' }),
+        el('div', { class: 'facts' },
+          el('div', { class: 'fact' }, el('b', { text: DATA.watchlist_size + '/' + DATA.watchlist_size }), el('span', { text: 'watchlist covered' })),
+          el('div', { class: 'fact' }, el('b', { text: String(DATA.board_size) }), el('span', { text: 'rows scored' })),
+          el('div', { class: 'fact' }, el('b', { text: String(DATA.early_size) }), el('span', { text: 'below the floor' })),
+          el('div', { class: 'fact' }, el('b', { text: String(DATA.peer_protocols) }), el('span', { text: 'live peers priced from' }))
+        )
       ),
-      el('div', { class: 'facts' },
-        el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
-        el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols priced from' }), el('b', { text: String(DATA.peer_protocols) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Peer multiples in use' }), el('b', { text: String(DATA.categories.length) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Global median multiple' }), el('b', { text: fmtMult(DATA.global_multiple) }))
+      chart === null ? null : el('figure', { class: 'spread-fig' },
+        el('figcaption', { text: 'What a dollar of TVL is worth, by category' }),
+        chart,
+        el('p', { class: 'sub', text: 'Each dot is one category’s live-token peers: ' + fmtMult(lo.multiple) + ' for ' + lo.category + ' up to ' + fmtMult(hi.multiple) + ' for ' + hi.category + ', a ' + Math.round(hi.multiple / lo.multiple) + '-fold spread. Two protocols of equal TVL in different categories are priced that far apart, which is why this board is not the TVL order.' })
       )
     );
   }

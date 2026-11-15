@@ -55,12 +55,24 @@ a { color: var(--accent); }
 .brand-name { font-family: var(--font-num); font-size: 13px; letter-spacing: 0.02em; color: var(--muted); }
 .top-meta { display: flex; flex-wrap: wrap; gap: var(--step-3); justify-content: flex-end; color: var(--muted); font-size: 13px; }
 .top-meta span { white-space: nowrap; }
-.lede { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr); gap: var(--step-6); padding: var(--step-6) 0 var(--step-5); }
+.lede { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 440px); gap: var(--step-6); padding: var(--step-5) 0 var(--step-5); align-items: start; }
 .lede p { color: var(--muted); max-width: 62ch; margin-top: var(--step-2); }
-.facts { display: grid; gap: var(--step-2); align-content: start; border-left: 1px solid var(--border); padding-left: var(--step-5); }
-.fact { display: flex; align-items: baseline; justify-content: space-between; gap: var(--step-3); }
-.fact b { font-family: var(--font-num); font-size: 15px; font-weight: 500; }
-.fact span { color: var(--muted); font-size: 13px; }
+
+/* The headline figures as one row, so the board starts higher up the page. */
+.facts { display: flex; flex-wrap: wrap; gap: var(--step-2) var(--step-5); margin-top: var(--step-4); }
+.fact { display: flex; align-items: baseline; gap: var(--step-2); }
+.fact b { font-family: var(--font-num); font-size: 17px; font-weight: 600; }
+.fact span { color: var(--muted); font-size: 12px; }
+
+/* The spread figure: one measure, one series, so no legend and no categorical colour. */
+.spread-fig { margin: 0; border-left: 1px solid var(--border); padding-left: var(--step-5); }
+.spread-fig figcaption { font-size: 13px; font-weight: 600; margin-bottom: var(--step-2); }
+.spread-fig .sub { margin-top: var(--step-2); max-width: 52ch; line-height: 1.5; }
+.spread { width: 100%; height: auto; display: block; overflow: visible; }
+.spread .ax { stroke: var(--border); stroke-width: 1; }
+.spread .tick { fill: var(--muted); font-family: var(--font-num); font-size: 9px; }
+.spread .median { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.spread .dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
 
 .controls { display: flex; flex-wrap: wrap; align-items: end; gap: var(--step-3); padding: var(--step-4) 0; border-top: 1px solid var(--border); }
 .field { display: grid; gap: var(--step-1); }
@@ -163,7 +175,7 @@ tbody tr.static:hover { background: transparent; }
 @media (max-width: 900px) {
   .shell { padding: var(--step-4); }
   .lede { grid-template-columns: 1fr; gap: var(--step-4); }
-  .facts { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: var(--step-4); }
+  .spread-fig { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: var(--step-4); }
   .field input { min-width: 0; width: 100%; }
   .terms > div { grid-template-columns: 1fr; gap: var(--step-1); }
   .panel-head { padding: var(--step-4); }
