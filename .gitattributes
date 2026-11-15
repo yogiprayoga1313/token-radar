@@ -1,0 +1,5 @@
+# The scorer rebuilds the dossier from /output and compares bytes, so every text file this repository
+# ships must check out identically on any machine: LF everywhere, never the platform's choice.
+* text=auto eol=lf
+
+*.png binary

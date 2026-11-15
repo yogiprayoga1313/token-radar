@@ -1,0 +1,16 @@
+# The program writes its board, dashboard copy and dossier here when run outside the grader.
+out/
+output/
+
+# Never commit a keypair, a key or an environment file.
+*keypair*.json
+*.pem
+.env
+.env.*
+
+# Transcript bundles are uploaded with the entry, not committed.
+transcripts*.tar.gz
+
+node_modules/
+.DS_Store
+Thumbs.db
