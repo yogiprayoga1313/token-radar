@@ -255,7 +255,8 @@
     return el('th', { scope: 'col', title: title || null },
       el('button', { type: 'button', onclick: function () { if (state.sort === key) state.dir = -state.dir; else { state.sort = key; state.dir = -1; } writeHash(); render(); } },
         label,
-        state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' v' : ' ^' }) : null
+        // An arrow, not a letter: the header is set in uppercase, where a bare "v" reads as one.
+        state.sort === key ? el('span', { 'aria-hidden': 'true', text: state.dir < 0 ? ' ↓' : ' ↑' }) : null
       )
     );
   }
