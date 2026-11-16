@@ -5,31 +5,38 @@
 // entry records no token at all (no market cap, no CoinGecko id, no symbol); protocols whose token already
 // trades are kept apart and shown at the market's own valuation, never mixed into the ranked board.
 //
-// WHAT THE VALUE MODEL DOES DIFFERENTLY
+// WHAT THE MODEL DOES, AND WHAT THE SNAPSHOT SAYS ABOUT IT
 //
-// A board whose value is `TVL x a constant` is a TVL table with extra columns: TVL spans four orders of
-// magnitude here, so any constant multiple reproduces the TVL order exactly. This model prices each
-// protocol against its OWN CATEGORY's live-token peers, read out of the same snapshot:
+// Nothing here is asserted that the snapshot can check. 128 of its protocols already have a token and
+// record a market cap, so each is a question this model can be marked on: hide it from its own peer
+// set, price it from its TVL and category alone, and compare. tools/backtest.mjs runs that over all
+// 128, leave-one-out, and the dashboard carries the result.
 //
-//   peerMultiple(category) = median(mcap_usd / tvl_usd) over the snapshot's live-token protocols in that
-//                            category, shrunk toward the global median by peer count.
+// That test rewrote this file twice.
 //
-// In this snapshot those medians run from 0.04x (Liquid Staking) to 1.22x (Cross Chain Bridge), a 30-fold
-// spread around a 0.214x global median, so a Bridge and a Liquid Staking protocol of equal TVL are priced
-// thirty times apart. Nothing is hardcoded per protocol: the multiples are computed from the file.
+//   1. The first model priced by category alone: the median mcap/TVL of a protocol's own category,
+//      shrunk toward the global median. The category spread it was built on is real, 0.04x to 1.22x.
+//      On the blind test it landed inside a factor of two 21.1% of the time, against 28.1% for one
+//      flat constant: WORSE than the baseline it was meant to beat.
 //
-//   impliedValue = tvl_usd                        the capital the protocol actually holds
-//                x peerMultiple(category)         what the market pays per dollar of TVL, in its category
-//                x farmerShare(tvl_usd)           the slice an early-user distribution hands to farmers
-//                x launchTiming(ageDays)          how close it is to the window where tokens actually ship
-//                x momentum(change_7d)            whether the capital is arriving or leaving
+//   2. What the variance actually belongs to is size. Least squares in log-log over the same 128
+//      gives log10(mcap) = a + b x log10(tvl) with b near 0.5, so market cap grows about as the
+//      square root of the TVL beneath it and the implied multiple falls from roughly 0.67x at $5M of
+//      TVL to 0.025x at $5B. Fitting that curve first and keeping the category only as a shift off it
+//      cuts the typical miss from 5.07x to 3.48x and beats the baseline on every measure.
 //
-// The last three are stated, bounded and the same function for every row. launchTiming is deliberately NOT
-// monotonic in age: a 60-day-old protocol is too young to ship, the 9-to-30-month band is where launches
-// cluster, and a protocol four years old with no token has told you something. The starter's model ramps
-// value up with age forever, which prices a 2021 protocol that never launched as its safest bet.
+//   impliedValue = 10^(a + b x log10(tvl) + categoryOffset)   what a launch has been worth at this size
+//                x farmerShare(tvl_usd)                       the slice early users are handed
+//                x launchTiming(ageDays)                      measured, see fitLaunchCurve below
+//                x momentum(change_7d)                        whether capital is arriving or leaving
 //
-// Every constant below is declared in the dashboard beside the number it moves.
+// launchTiming was a hand-drawn hump that decayed past 900 days, on the intuition that a protocol
+// running that long without a token never will. The snapshot disagrees: 31% of protocols aged one to
+// one and a half years carry a token, against 79% of those aged three to four. It is now read off
+// those cohorts instead.
+//
+// What is still only asserted: farmerShare and momentum. The snapshot records no distribution
+// history, so nothing here can mark them, and the dashboard says so rather than implying otherwise.
 
 // The farm plan lives in dashboard/farm.js, one classic script the page loads over file:// and this
 // module imports, so the plan board.json carries and the plan the dashboard draws are the same bytes
@@ -333,6 +340,8 @@ export interface RadarData {
   /** The size curve every price starts from, and how it did on the blind test. */
   curve: Curve;
   holdout: Holdout;
+  /** The launch curve, measured from the snapshot rather than drawn. */
+  launch: LaunchCurve;
   global_multiple: number;
   /** Live-token protocols the multiples were actually read from (not the Live tab's shown rows). */
   peer_protocols: number;
@@ -523,29 +532,77 @@ export function farmerShare(tvl: number, model: ModelConstants = MODEL): number 
   return model.share_small + (model.share_large - model.share_small) * t;
 }
 
+/** One age cohort: how many protocols that old the snapshot carries, and how many have a token. */
+export interface LaunchCohort {
+  up_to: number;
+  n: number;
+  launched: number;
+  share: number;
+}
+
+/** The measured launch curve, and what it was measured from. */
+export interface LaunchCurve {
+  cohorts: LaunchCohort[];
+  /** The highest cohort share, which the weighting is normalised against. */
+  peak: number;
+  /** Protocols carrying a listing date, out of the whole snapshot. */
+  dated: number;
+  total: number;
+}
+
+/** The cohort edges, in days since listing. Wide enough that no bucket is a handful of protocols. */
+const COHORT_EDGES = [90, 180, 270, 365, 545, 730, 1095, 1460, Infinity];
+
 /**
- * How close a protocol is to the window where tokens actually ship, from its days since listing.
+ * The launch curve, measured rather than drawn. Every protocol in the snapshot either has a token or
+ * does not, so the share that do, by age, is an observation and not an opinion.
  *
- * Not monotonic, and that is the point. Below `timing_cold` a protocol is too young to have a
- * distribution to farm; it ramps to full weight by `timing_open`, holds the plateau to `timing_close`,
- * then decays toward `timing_tail` by `timing_stale`: a protocol that has run four years without a token
- * is evidence against a launch, not for one.
+ * An earlier version of this model used a hand-drawn hump that rose to a plateau and then decayed
+ * past about 900 days, on the reasoning that a protocol which has run that long without a token has
+ * told you it never will. The snapshot says the opposite: 31% of protocols aged one to one and a half
+ * years carry a token, against 79% of those aged three to four. Whatever else is true, the old shape
+ * pointed the wrong way, and nothing but intuition had put it there.
+ *
+ * Read it honestly. These are cohorts seen at one moment, not one cohort followed through time, so
+ * era effects are mixed in: a protocol listed in 2021 lived through different conditions than one
+ * listed last year. And listed_at is the day DefiLlama began tracking a protocol, which for some is
+ * near their token launch and for others years before it. What this measures is an association
+ * between age and having launched, which is the most the snapshot can honestly support.
  */
-export function launchTiming(age: number | null, model: ModelConstants = MODEL): number {
+export function fitLaunchCurve(snapshot: Snapshot): LaunchCurve {
+  const dated = snapshot.protocols
+    .map((p) => ({ p, age: ageDays(snapshot.as_of, p.listed_at) }))
+    .filter((x): x is { p: SnapshotProtocol; age: number } => x.age !== null);
+
+  const cohorts: LaunchCohort[] = [];
+  let low = 0;
+  for (const edge of COHORT_EDGES) {
+    const inBucket = dated.filter((x) => x.age >= low && x.age < edge);
+    if (inBucket.length > 0) {
+      const launched = inBucket.filter((x) => !isPreToken(x.p)).length;
+      cohorts.push({
+        up_to: edge === Infinity ? 99_999 : edge,
+        n: inBucket.length,
+        launched,
+        share: round4(launched / inBucket.length),
+      });
+    }
+    low = edge;
+  }
+  const peak = cohorts.reduce((m, c) => Math.max(m, c.share), 0) || 1;
+  return { cohorts, peak: round4(peak), dated: dated.length, total: snapshot.protocols.length };
+}
+
+/**
+ * How strongly a protocol's age argues that a launch is near: the share of protocols its own age that
+ * already carry a token, read off the measured curve and scaled so the heaviest cohort weighs one. A
+ * protocol with no listing date takes the weight of unknown_age_days.
+ */
+export function launchTiming(age: number | null, model: ModelConstants = MODEL, curve?: LaunchCurve): number {
+  if (curve === undefined || curve.cohorts.length === 0) return 1;
   const d = age ?? model.unknown_age_days;
-  if (d <= 0) return model.timing_min;
-  if (d < model.timing_cold) {
-    return model.timing_min + (1 - model.timing_min) * (d / model.timing_cold) * 0.6;
-  }
-  if (d < model.timing_open) {
-    const t = (d - model.timing_cold) / (model.timing_open - model.timing_cold);
-    const start = model.timing_min + (1 - model.timing_min) * 0.6;
-    return start + (1 - start) * t;
-  }
-  if (d <= model.timing_close) return 1;
-  if (d >= model.timing_stale) return model.timing_tail;
-  const t = (d - model.timing_close) / (model.timing_stale - model.timing_close);
-  return 1 - (1 - model.timing_tail) * t;
+  const hit = curve.cohorts.find((c) => d < c.up_to) ?? curve.cohorts[curve.cohorts.length - 1]!;
+  return clamp(hit.share / curve.peak, model.timing_min, 1);
 }
 
 /**
@@ -586,12 +643,12 @@ export interface Scored {
 }
 
 /** The implied value of one protocol's unlaunched token, and every factor behind it. */
-export function score(p: SnapshotProtocol, asOf: string, valuation: Valuation, model: ModelConstants = MODEL): Scored {
+export function score(p: SnapshotProtocol, asOf: string, valuation: Valuation, model: ModelConstants = MODEL, launch?: LaunchCurve): Scored {
   const age = ageDays(asOf, p.listed_at);
   const quote = valuation.quote(p.category, p.tvl_usd);
   const fdv = p.tvl_usd * quote.multiple;
   const share = farmerShare(p.tvl_usd, model);
-  const timing = launchTiming(age, model);
+  const timing = launchTiming(age, model, launch);
   const { multiplier: momentumMult, growthPct } = momentum(p.change_7d, model);
   const implied = Math.max(1, Math.round(fdv * share * timing * momentumMult));
   const farmers = Math.max(model.farmers_floor, Math.round(p.tvl_usd / model.farmer_position_usd));
@@ -674,7 +731,7 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
 }
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, valuation = new Valuation(snapshot, model)): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, valuation = new Valuation(snapshot, model), launch: LaunchCurve = fitLaunchCurve(snapshot)): BoardRow[] {
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug it names, so the gate's coverage row is never gambled on.
@@ -690,7 +747,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, va
     .slice(0, EARLY_ROWS);
   for (const p of early) chosen.set(p.slug, p);
 
-  const scored = [...chosen.values()].map((p) => ({ p, s: score(p, snapshot.as_of, valuation, model) }));
+  const scored = [...chosen.values()].map((p) => ({ p, s: score(p, snapshot.as_of, valuation, model, launch) }));
   scored.sort((a, b) => b.s.implied - a.s.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
 
   return scored.map(({ p, s }, i) => ({
@@ -784,7 +841,8 @@ export function radarRow(row: BoardRow): RadarRow {
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const valuation = new Valuation(snapshot, model);
-  const board = buildBoard(snapshot, model, valuation);
+  const launch = fitLaunchCurve(snapshot);
+  const board = buildBoard(snapshot, model, valuation, launch);
   const live = liveRows(snapshot);
   const watchlist = new Set(snapshot.watchlist);
   const early = board.filter((r) => !watchlist.has(r.slug)).length;
@@ -811,6 +869,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     model_version: MODEL_VERSION,
     curve: valuation.curve,
     holdout: validate(snapshot, model),
+    launch,
     global_multiple: round4(valuation.globalMultiple),
     peer_protocols: snapshot.protocols.filter(isQuotablePeer).length,
     watchlist_size: snapshot.watchlist.length,

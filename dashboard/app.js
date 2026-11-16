@@ -40,17 +40,15 @@
     var t = clamp((Math.log10(Math.max(tvl, 1)) - lo) / (hi - lo), 0, 1);
     return m.share_small + (m.share_large - m.share_small) * t;
   }
+  // Read off the measured launch curve, the same cohorts lib/model.ts counted.
   function launchTiming(age, m) {
+    var c = DATA.launch;
+    if (!c || !c.cohorts.length) return 1;
     var d = age === null || age === undefined ? m.unknown_age_days : age;
-    if (d <= 0) return m.timing_min;
-    if (d < m.timing_cold) return m.timing_min + (1 - m.timing_min) * (d / m.timing_cold) * 0.6;
-    if (d < m.timing_open) {
-      var start = m.timing_min + (1 - m.timing_min) * 0.6;
-      return start + (1 - start) * ((d - m.timing_cold) / (m.timing_open - m.timing_cold));
-    }
-    if (d <= m.timing_close) return 1;
-    if (d >= m.timing_stale) return m.timing_tail;
-    return 1 - (1 - m.timing_tail) * ((d - m.timing_close) / (m.timing_stale - m.timing_close));
+    var hit = null;
+    for (var i = 0; i < c.cohorts.length; i++) { if (d < c.cohorts[i].up_to) { hit = c.cohorts[i]; break; } }
+    if (hit === null) hit = c.cohorts[c.cohorts.length - 1];
+    return clamp(hit.share / c.peak, m.timing_min, 1);
   }
   function momentumOf(change7d, m) {
     var g = clamp(change7d === null || change7d === undefined ? 0 : change7d, m.growth_floor, m.growth_cap);
@@ -453,7 +451,7 @@ function modelPanel() {
         el('div', null, el('dt', { text: 'sizeCurve' }), el('dd', { text: 'Least squares through the ' + DATA.curve.points + ' live-token protocols in log-log: log10(mcap) = ' + DATA.curve.a + ' + ' + DATA.curve.b + ' x log10(tvl). A slope under one says market cap grows slower than the TVL beneath it, so the implied multiple falls as a protocol gets bigger. This line does most of the work; a category only shifts it.' })),
         el('div', null, el('dt', { text: 'categoryOffset' }), el('dd', { text: 'The median amount a category of live-token peers sits above or below that line, in log10, shrunk toward no shift at all by peer count (k = ' + m.peer_shrinkage + ', a set needs ' + m.peer_min + ' peers to count). Both knobs were picked on the blind test above rather than by taste.' })),
         el('div', null, el('dt', { text: 'farmerShare' }), el('dd', { text: 'The slice of a launch an early-user distribution hands to farmers: ' + (m.share_small * 100).toFixed(1) + '% at $' + Math.round(m.share_tvl_small / 1e6) + 'M of TVL falling to ' + (m.share_large * 100).toFixed(1) + '% at $' + Math.round(m.share_tvl_large / 1e9) + 'B, interpolated on a log scale. A bigger protocol spreads its distribution over more claimants.' })),
-        el('div', null, el('dt', { text: 'launchTiming' }), el('dd', { text: 'How close the protocol is to the window where tokens actually ship, from days since listing. Deliberately not monotonic: it ramps from ' + m.timing_min + ' below ' + m.timing_cold + ' days, holds full weight from ' + m.timing_open + ' to ' + m.timing_close + ' days, then decays to ' + m.timing_tail + ' by ' + m.timing_stale + '. A protocol that has run that long with no token is evidence against a launch, not for one.' })),
+        el('div', null, el('dt', { text: 'launchTiming' }), el('dd', { text: 'Measured, not drawn: the share of protocols the same age that already carry a token, read off ' + DATA.launch.cohorts.length + ' age cohorts counted over the ' + DATA.launch.dated + ' protocols here that record a listing date, scaled so the heaviest cohort weighs one. It runs from ' + Math.round(Math.min.apply(null, DATA.launch.cohorts.map(function (c) { return c.share; })) * 100) + '% to ' + Math.round(DATA.launch.peak * 100) + '%. An earlier version of this model used a hand-drawn hump that decayed past 900 days, on the idea that a protocol running that long without a token never will; these cohorts say the opposite, so it went. They are cohorts seen at one moment rather than one followed through time, and listed_at is when DefiLlama began tracking a protocol, not when it was born.' })),
         el('div', null, el('dt', { text: 'momentum' }), el('dd', { text: 'Whether capital is arriving or leaving, from the seven-day TVL change clamped to ' + m.growth_floor + '%..' + m.growth_cap + '% and softened through tanh at scale ' + m.growth_scale + ', weight ' + m.growth_weight + ', so one violent week cannot carry a row.' })),
         el('div', null, el('dt', { text: 'Per farmer' }), el('dd', { text: 'The implied pool split between tvl_usd / $' + m.farmer_position_usd.toLocaleString('en-US') + ' assumed farmers, never fewer than ' + m.farmers_floor + '. It is the number a reader with one wallet should actually read.' }))
       ),
@@ -500,7 +498,12 @@ function modelPanel() {
         chainRow('x Category offset', (row.peer_offset >= 0 ? 'x' : 'x') + Math.pow(10, row.peer_offset).toFixed(2), row.peer_basis === 'global' ? 'none: too few live peers in its category or its family to measure one' : (row.peer_offset >= 0 ? 'above' : 'below') + ' the line, from ' + row.peer_count + ' live-token ' + (row.peer_basis === 'family' ? 'protocols in the ' + row.peer_category + ' family' : row.peer_category + ' protocols')),
         chainRow('= Expected launch value', fmtUsd(row.expected_fdv_usd), 'an effective ' + fmtMult(row.peer_multiple) + ' on its TVL, at this size'),
         chainRow('x Farmer share', (share * 100).toFixed(2) + '%', 'the slice an early-user distribution hands to farmers at this size'),
-        chainRow('x Launch timing', row.timing_multiplier.toFixed(3), fmtAge(row.age_days) + ' with no token' + (row.age_days === null ? '' : row.age_days < m.timing_cold ? ': too young to have a distribution yet' : row.age_days <= m.timing_close ? ': inside the window where launches cluster' : ': past the window, and discounted for it')),
+        chainRow('x Launch timing', row.timing_multiplier.toFixed(3), (function () {
+          var c = DATA.launch, d = row.age_days === null ? m.unknown_age_days : row.age_days, hit = null;
+          for (var i = 0; i < c.cohorts.length; i++) { if (d < c.cohorts[i].up_to) { hit = c.cohorts[i]; break; } }
+          if (hit === null) hit = c.cohorts[c.cohorts.length - 1];
+          return fmtAge(row.age_days) + ' with no token' + (row.age_days === null ? ', so it is scored at the ' + m.unknown_age_days + '-day cohort' : '') + ': of the ' + hit.n + ' protocols that old, ' + Math.round(hit.share * 100) + '% already carry one';
+        })()),
         chainRow('x Momentum', row.momentum_multiplier.toFixed(3), fmtPct(row.change_7d) + ' over seven days'),
         el('div', { class: 'chain-row total' },
           el('span', { text: '= Implied value' }),

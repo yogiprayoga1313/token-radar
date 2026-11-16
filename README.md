@@ -69,10 +69,26 @@ implied     = launchValue x farmerShare(tvl) x launchTiming(age) x momentum(chan
 Against the TVL ordering the starter model's Spearman correlation is **0.98** - effectively a TVL table.
 This model's is **0.53**: rows move a median of 43 places and up to 135.
 
-`launchTiming` is deliberately **not** monotonic in age. A protocol 60 days old has no distribution to
-farm yet; launches cluster between roughly 9 and 30 months; and a protocol four years old with no token
-is evidence against a launch, not for one. A model that raises value with age forever prices the
-protocol that never launched as its safest bet.
+## The test rewrote the model a second time
+
+`launchTiming` used to be a hand-drawn hump: rising to a plateau, then decaying past about 900 days, on
+the reasoning that a protocol running that long without a token has told you it never will. Nothing but
+intuition had put that shape there, and the snapshot can check it - every protocol in it either carries
+a token or does not, so the share that do, by age, is an observation:
+
+| Age since listing | n | Already have a token |
+| --- | --- | --- |
+| 0-90 d | 53 | 30.2% |
+| 365-545 d | 103 | 31.1% |
+| 730-1095 d | 139 | 54.7% |
+| 1095-1460 d | 89 | **78.6%** |
+| 1460+ d | 74 | **79.7%** |
+
+The curve was pointing the wrong way. It is now read off those cohorts instead of drawn.
+
+Read honestly: these are cohorts seen at one moment, not one cohort followed through time, so era
+effects are mixed in. And `listed_at` is the day DefiLlama began tracking a protocol, which for some is
+near their token launch and for others years before it.
 
 ## Farm plans that cost something
 
